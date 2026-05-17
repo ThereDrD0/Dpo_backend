@@ -10,4 +10,10 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="portal.xml" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="notifications.ini" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="customsettings.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

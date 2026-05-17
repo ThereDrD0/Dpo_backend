@@ -1,0 +1,6 @@
+Custom:Owner
+Student lazy mode
+Custom:Version
+practice-6
+Custom:Note
+Loaded from custom text provider
