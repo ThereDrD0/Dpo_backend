@@ -6,21 +6,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddStudentPortalServices();
-
-var servicesList = builder.Services
-    .Take(15)
-    .Select(s => new ServiceInfo(
-        s.ServiceType.FullName ?? s.ServiceType.Name,
-        s.Lifetime.ToString(),
-        s.ImplementationType?.FullName ?? s.ImplementationInstance?.GetType().FullName ?? "factory"))
-    .ToList();
-
-var servicesCount = builder.Services.Count;
+builder.Services.AddCampusServices();
 
 var app = builder.Build();
-
-app.UseMiddleware<ErrorHandlingMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -28,126 +16,162 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.Use(async (context, next) =>
+app.UseRequestAudit();
+
+app.MapGet("/", () => Results.Json(new
 {
-    var started = DateTime.Now;
-    Console.WriteLine($"Start: {context.Request.Method} {context.Request.Path}");
-
-    context.Response.OnStarting(() =>
+    app = "CampusRouteLab",
+    routes = new[]
     {
-        var ms = (DateTime.Now - started).TotalMilliseconds;
-        context.Response.Headers["X-Request-Time-Ms"] = ms.ToString("0");
-        return Task.CompletedTask;
-    });
+        "/students",
+        "/students/{group}",
+        "/students/{group}/{id}",
+        "/reports/{section?}",
+        "/portal/{module=home}/{page=index}/{id?}",
+        "/files/{**path}",
+        "/routes",
+        "/diag/lifetimes",
+        "/diag/lifetimes/check",
+        "/diag/request-services",
+        "/diag/app-services"
+    }
+}));
 
-    await next();
-
-    Console.WriteLine($"Finish: {context.Request.Path} {context.Response.StatusCode}");
+app.MapGet("/students", (IStudentCatalogService catalog) =>
+{
+    return Results.Json(catalog.GetAll());
 });
 
-app.UseWhen(
-    context => context.Request.Query["trace"] == "true",
-    traceApp =>
-    {
-        traceApp.Use(async (context, next) =>
-        {
-            Console.WriteLine($"Trace branch: {context.Request.Path}");
-            context.Response.Headers["X-Debug-Trace"] = "true";
-            await next();
-        });
-    });
-
-app.MapWhen(
-    context => context.Request.Query.ContainsKey("format") && context.Request.Query["format"] == "plain",
-    plainApp =>
-    {
-        plainApp.Run(async context =>
-        {
-            context.Response.ContentType = "text/plain; charset=utf-8";
-            await context.Response.WriteAsync("Plain text branch handled this request.");
-        });
-    });
-
-app.Map("/tools", tools =>
+app.MapGet("/students/{group}", (string group, IStudentCatalogService catalog) =>
 {
-    tools.Map("/time", timeApp =>
-    {
-        timeApp.Run(async context =>
-        {
-            var dateTime = context.RequestServices.GetRequiredService<IDateTimeService>();
-            context.Response.ContentType = "text/plain; charset=utf-8";
-            await context.Response.WriteAsync($"Current time: {dateTime.GetTime()}");
-        });
-    });
-
-    tools.Map("/date", dateApp =>
-    {
-        dateApp.Run(async context =>
-        {
-            var dateTime = context.RequestServices.GetRequiredService<IDateTimeService>();
-            context.Response.ContentType = "text/plain; charset=utf-8";
-            await context.Response.WriteAsync($"Current date: {dateTime.GetDate()}");
-        });
-    });
-
-    tools.Map("/info", infoApp =>
-    {
-        infoApp.Run(async context =>
-        {
-            context.Response.ContentType = "text/plain; charset=utf-8";
-            await context.Response.WriteAsync("StudentPortal.Diagnostics: tools branch is working.");
-        });
-    });
+    var students = catalog.GetByGroup(group);
+    return Results.Json(new { group, count = students.Count, students });
 });
 
-app.Map("/secure", secure =>
+app.MapGet("/students/{group}/{id:int}", (string group, int id, IStudentCatalogService catalog) =>
 {
-    secure.UseToken("study2026");
+    var student = catalog.GetById(group, id);
 
-    secure.Map("/report", reportApp =>
+    if (student is null)
     {
-        reportApp.Run(async context =>
-        {
-            context.Response.ContentType = "text/plain; charset=utf-8";
-            await context.Response.WriteAsync("Secure report: access granted.");
-        });
-    });
-});
-
-app.MapGet("/", () =>
-{
-    return """
-StudentPortal.Diagnostics
-
-Routes:
-/tools/time
-/tools/date
-/tools/info
-/tools/time?trace=true
-/anything?format=plain
-/secure/report
-/secure/report?token=study2026
-/env
-/di/services
-""";
-});
-
-app.MapGet("/env", (IEnvironmentReportService report) => report.GetReport());
-
-app.MapGet("/di/services", () =>
-{
-    var text = new StringBuilder();
-    text.AppendLine($"Services count: {servicesCount}");
-    text.AppendLine();
-
-    foreach (var item in servicesList)
-    {
-        text.AppendLine($"{item.ServiceType} | {item.Lifetime} | {item.ImplementationType}");
+        return Results.NotFound(new { message = "Student not found", group, id });
     }
 
-    return text.ToString();
+    return Results.Json(student);
+});
+
+app.MapGet("/reports/{section?}", (string? section, DiagnosticsReportService report) =>
+{
+    section ??= "overview";
+
+    return Results.Json(new
+    {
+        section,
+        generatedAt = DateTime.Now,
+        text = report.BuildReport(section)
+    });
+});
+
+app.MapGet("/portal/{module=home}/{page=index}/{id?}", (string module, string page, string? id) =>
+{
+    return Results.Json(new
+    {
+        module,
+        page,
+        id = id ?? "not set"
+    });
+});
+
+app.MapGet("/files/{**path}", (string? path) =>
+{
+    return Results.Json(new
+    {
+        path = path ?? "",
+        parts = (path ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries)
+    });
+});
+
+app.MapGet("/routes", (EndpointDataSource endpoints) =>
+{
+    var routes = endpoints.Endpoints
+        .OfType<RouteEndpoint>()
+        .Select(x => new
+        {
+            pattern = x.RoutePattern.RawText,
+            displayName = x.DisplayName
+        })
+        .OrderBy(x => x.pattern)
+        .ToList();
+
+    return Results.Json(routes);
+});
+
+app.MapGet("/diag/lifetimes", (
+    IAppInfoService appInfo,
+    IRequestContextService requestContext,
+    ITransientMarkerService transientMarker,
+    DiagnosticsReportService report) =>
+{
+    return Results.Json(new
+    {
+        singleton = new
+        {
+            appInfo.AppInstanceId,
+            appInfo.StartedAt
+        },
+        scoped = new
+        {
+            requestContext.RequestId,
+            requestContext.CreatedAt
+        },
+        transient = new
+        {
+            transientMarker.MarkerId,
+            transientMarker.CreatedAt
+        },
+        report = report.BuildReport("lifetimes")
+    });
+});
+
+app.MapGet("/diag/lifetimes/check", (
+    IRequestContextService requestContext,
+    ITransientMarkerService first,
+    HttpContext context) =>
+{
+    var second = context.RequestServices.GetRequiredService<ITransientMarkerService>();
+
+    return Results.Json(new
+    {
+        requestContext.RequestId,
+        firstTransient = first.MarkerId,
+        secondTransient = second.MarkerId,
+        transientIsDifferent = first.MarkerId != second.MarkerId
+    });
+});
+
+app.MapGet("/diag/request-services", (HttpContext context) =>
+{
+    var requestContext = context.RequestServices.GetRequiredService<IRequestContextService>();
+    var transientMarker = context.RequestServices.GetRequiredService<ITransientMarkerService>();
+
+    return Results.Json(new
+    {
+        from = "HttpContext.RequestServices",
+        requestContext.RequestId,
+        transientMarker.MarkerId
+    });
+});
+
+app.MapGet("/diag/app-services", () =>
+{
+    var appInfo = app.Services.GetRequiredService<IAppInfoService>();
+
+    return Results.Json(new
+    {
+        from = "app.Services",
+        appInfo.AppInstanceId,
+        appInfo.StartedAt
+    });
 });
 
 app.Run();
-
-record ServiceInfo(string ServiceType, string Lifetime, string ImplementationType);
