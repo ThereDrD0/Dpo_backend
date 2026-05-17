@@ -1,34 +1,43 @@
-@TaskManager.Api_HostAddress = http://localhost:5216
+@HostAddress = http://localhost:5216
 
-GET {{TaskManager.Api_HostAddress}}/api/tasks
-Accept: application/json
-
-###
-
-POST {{TaskManager.Api_HostAddress}}/api/tasks
-Content-Type: application/json
-
-{
-  "title": "Изучить ASP.NET Core",
-  "description": "Minimal API"
-}
+GET {{HostAddress}}/
 
 ###
 
-PUT {{TaskManager.Api_HostAddress}}/api/tasks/1
-Content-Type: application/json
-
-{
-  "title": "Изучить ASP.NET Core",
-  "description": "Minimal API и Swagger",
-  "isCompleted": true
-}
+GET {{HostAddress}}/tools/time
 
 ###
 
-GET {{TaskManager.Api_HostAddress}}/api/tasks/completed
-Accept: application/json
+GET {{HostAddress}}/tools/date
 
 ###
 
-DELETE {{TaskManager.Api_HostAddress}}/api/tasks/1
+GET {{HostAddress}}/tools/info
+
+###
+
+GET {{HostAddress}}/tools/time?trace=true
+
+###
+
+GET {{HostAddress}}/anything?format=plain
+
+###
+
+GET {{HostAddress}}/secure/report
+
+###
+
+GET {{HostAddress}}/secure/report?token=study2026
+
+###
+
+GET {{HostAddress}}/env
+
+###
+
+GET {{HostAddress}}/di/services
+
+###
+
+GET {{HostAddress}}/unknown

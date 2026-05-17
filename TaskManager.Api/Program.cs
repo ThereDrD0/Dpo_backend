@@ -1,12 +1,26 @@
-using System.Text.Json;
-using TaskManager.Api.Models;
+using System.Text;
+using TaskManager.Api.Middleware;
+using TaskManager.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddStudentPortalServices();
+
+var servicesList = builder.Services
+    .Take(15)
+    .Select(s => new ServiceInfo(
+        s.ServiceType.FullName ?? s.ServiceType.Name,
+        s.Lifetime.ToString(),
+        s.ImplementationType?.FullName ?? s.ImplementationInstance?.GetType().FullName ?? "factory"))
+    .ToList();
+
+var servicesCount = builder.Services.Count;
 
 var app = builder.Build();
+
+app.UseMiddleware<ErrorHandlingMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -14,95 +28,126 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-var jsonOptions = new JsonSerializerOptions
+app.Use(async (context, next) =>
 {
-    PropertyNameCaseInsensitive = true,
-    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    WriteIndented = true
-};
+    var started = DateTime.Now;
+    Console.WriteLine($"Start: {context.Request.Method} {context.Request.Path}");
 
-var dataPath = Path.Combine(app.Environment.ContentRootPath, "Data", "tasks.json");
-Directory.CreateDirectory(Path.GetDirectoryName(dataPath)!);
-
-if (!File.Exists(dataPath))
-{
-    File.WriteAllText(dataPath, "[]");
-}
-
-List<TaskModel> ReadTasks()
-{
-    var json = File.ReadAllText(dataPath);
-    return JsonSerializer.Deserialize<List<TaskModel>>(json, jsonOptions) ?? [];
-}
-
-void SaveTasks(List<TaskModel> tasks)
-{
-    var json = JsonSerializer.Serialize(tasks, jsonOptions);
-    File.WriteAllText(dataPath, json);
-}
-
-var tasksApi = app.MapGroup("/api/tasks").WithTags("Tasks");
-
-tasksApi.MapGet("", () => ReadTasks());
-
-tasksApi.MapGet("/completed", () =>
-{
-    var tasks = ReadTasks();
-    return tasks.Where(task => task.IsCompleted);
-});
-
-tasksApi.MapGet("/{id:int}", (int id) =>
-{
-    var task = ReadTasks().FirstOrDefault(task => task.Id == id);
-    return task is null ? Results.NotFound() : Results.Ok(task);
-});
-
-tasksApi.MapPost("", (TaskModel newTask) =>
-{
-    var tasks = ReadTasks();
-
-    newTask.Id = tasks.Count == 0 ? 1 : tasks.Max(task => task.Id) + 1;
-    newTask.IsCompleted = false;
-
-    tasks.Add(newTask);
-    SaveTasks(tasks);
-
-    return Results.Created($"/api/tasks/{newTask.Id}", newTask);
-});
-
-tasksApi.MapPut("/{id:int}", (int id, TaskModel updatedTask) =>
-{
-    var tasks = ReadTasks();
-    var task = tasks.FirstOrDefault(task => task.Id == id);
-
-    if (task is null)
+    context.Response.OnStarting(() =>
     {
-        return Results.NotFound();
+        var ms = (DateTime.Now - started).TotalMilliseconds;
+        context.Response.Headers["X-Request-Time-Ms"] = ms.ToString("0");
+        return Task.CompletedTask;
+    });
+
+    await next();
+
+    Console.WriteLine($"Finish: {context.Request.Path} {context.Response.StatusCode}");
+});
+
+app.UseWhen(
+    context => context.Request.Query["trace"] == "true",
+    traceApp =>
+    {
+        traceApp.Use(async (context, next) =>
+        {
+            Console.WriteLine($"Trace branch: {context.Request.Path}");
+            context.Response.Headers["X-Debug-Trace"] = "true";
+            await next();
+        });
+    });
+
+app.MapWhen(
+    context => context.Request.Query.ContainsKey("format") && context.Request.Query["format"] == "plain",
+    plainApp =>
+    {
+        plainApp.Run(async context =>
+        {
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            await context.Response.WriteAsync("Plain text branch handled this request.");
+        });
+    });
+
+app.Map("/tools", tools =>
+{
+    tools.Map("/time", timeApp =>
+    {
+        timeApp.Run(async context =>
+        {
+            var dateTime = context.RequestServices.GetRequiredService<IDateTimeService>();
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            await context.Response.WriteAsync($"Current time: {dateTime.GetTime()}");
+        });
+    });
+
+    tools.Map("/date", dateApp =>
+    {
+        dateApp.Run(async context =>
+        {
+            var dateTime = context.RequestServices.GetRequiredService<IDateTimeService>();
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            await context.Response.WriteAsync($"Current date: {dateTime.GetDate()}");
+        });
+    });
+
+    tools.Map("/info", infoApp =>
+    {
+        infoApp.Run(async context =>
+        {
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            await context.Response.WriteAsync("StudentPortal.Diagnostics: tools branch is working.");
+        });
+    });
+});
+
+app.Map("/secure", secure =>
+{
+    secure.UseToken("study2026");
+
+    secure.Map("/report", reportApp =>
+    {
+        reportApp.Run(async context =>
+        {
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            await context.Response.WriteAsync("Secure report: access granted.");
+        });
+    });
+});
+
+app.MapGet("/", () =>
+{
+    return """
+StudentPortal.Diagnostics
+
+Routes:
+/tools/time
+/tools/date
+/tools/info
+/tools/time?trace=true
+/anything?format=plain
+/secure/report
+/secure/report?token=study2026
+/env
+/di/services
+""";
+});
+
+app.MapGet("/env", (IEnvironmentReportService report) => report.GetReport());
+
+app.MapGet("/di/services", () =>
+{
+    var text = new StringBuilder();
+    text.AppendLine($"Services count: {servicesCount}");
+    text.AppendLine();
+
+    foreach (var item in servicesList)
+    {
+        text.AppendLine($"{item.ServiceType} | {item.Lifetime} | {item.ImplementationType}");
     }
 
-    task.Title = updatedTask.Title;
-    task.Description = updatedTask.Description;
-    task.IsCompleted = updatedTask.IsCompleted;
-
-    SaveTasks(tasks);
-
-    return Results.Ok(task);
-});
-
-tasksApi.MapDelete("/{id:int}", (int id) =>
-{
-    var tasks = ReadTasks();
-    var task = tasks.FirstOrDefault(task => task.Id == id);
-
-    if (task is null)
-    {
-        return Results.NotFound();
-    }
-
-    tasks.Remove(task);
-    SaveTasks(tasks);
-
-    return Results.NoContent();
+    return text.ToString();
 });
 
 app.Run();
+
+record ServiceInfo(string ServiceType, string Lifetime, string ImplementationType);
